@@ -51,7 +51,7 @@ FOVCircle.Transparency = SilentAim.FOV.Transparency
 FOVCircle.Radius = SilentAim.FOV.Radius
 
 local IsToggled = false
-local Target
+local Target = { Player = nil, TargetPart = nil } -- Modified to be a table
 local Tween
 local Info
 local Cycle
@@ -320,18 +320,21 @@ end
 
 local function GetCamlockTarget()
     local ClosestPlayer, ClosestDistance = nil, math.huge
+    local ClosestTargetPart = nil
     for _, Plr in pairs(Players:GetPlayers()) do
         if Plr ~= LocalPlayer then
-            if Plr.Character and (Plr.Character:FindFirstChild("HumanoidRootPart") or Plr.Character:FindFirstChild("Torso")) then
-                if not Camlock.HealthCheck or (Plr.Character:FindFirstChildOfClass("Humanoid") and Plr.Character:FindFirstChildOfClass("Humanoid").Health > 0) then
+            local Character = Plr.Character
+            if Character and (Character:FindFirstChild("HumanoidRootPart") or Character:FindFirstChild("Torso")) then
+                local Humanoid = Character:FindFirstChildOfClass("Humanoid")
+                if not Camlock.HealthCheck or (Humanoid and Humanoid.Health > 0) then
                     local MousePos = Vector2.new(Mouse.X, Mouse.Y)
                     local TargetPart
                     if Camlock.HitPartMode == "Closest" then
-                        TargetPart = GetClosestPart(Plr.Character, MousePos)
+                        TargetPart = GetClosestPart(Character, MousePos)
                     elseif Camlock.HitPartMode == "Random" then
-                        TargetPart = GetRandomPart(Plr.Character)
+                        TargetPart = GetRandomPart(Character)
                     else
-                        TargetPart = Plr.Character:FindFirstChild(Camlock.HitPart)
+                        TargetPart = Character:FindFirstChild(Camlock.HitPart)
                     end
                     if TargetPart then
                         local ScreenPos, Visible = Camera:WorldToViewportPoint(TargetPart.Position)
@@ -341,7 +344,7 @@ local function GetCamlockTarget()
                             if Difference < ClosestDistance then
                                 ClosestDistance = Difference
                                 ClosestPlayer = Plr
-                                ClosestPlayer.TargetPart = TargetPart
+                                ClosestTargetPart = TargetPart
                             end
                         end
                     end
@@ -349,7 +352,8 @@ local function GetCamlockTarget()
             end
         end
     end
-    Target = ClosestPlayer
+    -- Update Target as a table
+    Target = { Player = ClosestPlayer, TargetPart = ClosestTargetPart }
 end
 
 local function CamlockMain()
@@ -359,16 +363,23 @@ local function CamlockMain()
         return
     end
     GetCamlockTarget()
+    if not Target.Player or not Target.TargetPart then
+        return -- Exit if no valid target is found
+    end
     Cycle = RunService.RenderStepped:Connect(function()
         if Camlock.KnifeCheck and IsHoldingKnife() then
             if Tween then Tween:Cancel() end
             Cycle:Disconnect()
             return
         end
-        if Target and Target.Character and Target.TargetPart and (Target.Character:FindFirstChild("HumanoidRootPart") or Target.Character:FindFirstChild("Torso")) then
-            if not Camlock.HealthCheck or (Target.Character:FindFirstChildOfClass("Humanoid") and Target.Character:FindFirstChildOfClass("Humanoid").Health > 0) then
+        local TargetPlayer = Target.Player
+        local TargetPart = Target.TargetPart
+        local Character = TargetPlayer and TargetPlayer.Character
+        if Character and TargetPart and (Character:FindFirstChild("HumanoidRootPart") or Character:FindFirstChild("Torso")) then
+            local Humanoid = Character:FindFirstChildOfClass("Humanoid")
+            if not Camlock.HealthCheck or (Humanoid and Humanoid.Health > 0) then
                 Info = TweenInfo.new(Camlock.Time, Enum.EasingStyle.Quad, Enum.EasingDirection.Out, 0, false, 0)
-                local targetPosition = Camlock.Prediction.Enabled and ApplyPrediction(Target.TargetPart, Camlock.Prediction) or Target.TargetPart.Position
+                local targetPosition = Camlock.Prediction.Enabled and ApplyPrediction(TargetPart, Camlock.Prediction) or TargetPart.Position
                 local LookAt = CFrame.lookAt(Camera.CFrame.Position, targetPosition)
                 Tween = TweenService:Create(Camera, Info, {CFrame = LookAt})
                 Tween:Play()
