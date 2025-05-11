@@ -1,0 +1,719 @@
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+local Camera = workspace.CurrentCamera
+local Mouse = LocalPlayer:GetMouse()
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local motional = getgenv().motional
+local SilentAim = motional.SilentAim
+local Camlock = motional.Camlock
+local Backtrack = motional.Backtrack
+local TriggerBot = motional.TriggerBot
+local HitboxExpander = motional.HitboxExpander
+local Movement = motional.Movement
+local ESP = motional.ESP
+
+-- Intro sequence
+do
+    local success, err = pcall(function()
+        local screenGui = Instance.new("ScreenGui")
+        screenGui.Name = "MotionalIntroGui"
+        screenGui.IgnoreGuiInset = true
+        screenGui.ResetOnSpawn = false
+        screenGui.Parent = LocalPlayer:WaitForChild("PlayerGui", 5)
+
+        local textLabel = Instance.new("TextLabel")
+        textLabel.Name = "MotionalText"
+        textLabel.Size = UDim2.new(0.5, 0, 0.2, 0)
+        textLabel.Position = UDim2.new(0.25, 0, 0.4, 0)
+        textLabel.BackgroundTransparency = 1
+        textLabel.Text = "motional.dev"
+        textLabel.TextColor3 = Color3.fromRGB(175, 134, 144)
+        textLabel.TextScaled = true
+        textLabel.Font = Enum.Font.Nunito
+        textLabel.TextTransparency = 0
+        textLabel.Parent = screenGui
+
+        task.wait(3)
+        screenGui:Destroy()
+    end)
+    if not success then
+        warn("[Intro] Failed to display intro: " .. tostring(err))
+    end
+end
+
+local FOVCircle = Drawing.new("Circle")
+FOVCircle.Color = SilentAim.FOV.OutlineColor
+FOVCircle.Thickness = SilentAim.FOV.Thickness
+FOVCircle.Transparency = SilentAim.FOV.Transparency
+FOVCircle.Radius = SilentAim.FOV.Radius
+
+local IsToggled = false
+local Target
+local Tween
+local Info
+local Cycle
+
+local backtrackData = {}
+local lastRecordTime = {}
+local lastCleanup = tick()
+local backtrackVisuals = {}
+
+local hitboxVisuals = {}
+local WalkSpeedEnabled = false
+local JumpPowerEnabled = false
+local lastClickTime = 0
+
+-- New ESP Implementation
+local ActiveESPs = {}
+
+local ESPObject = {}
+ESPObject.__index = ESPObject
+
+function ESPObject.new(player)
+    local self = setmetatable({}, ESPObject)
+    self.Player = player
+    self.Objects = {
+        Box = Drawing.new("Square"),
+        BoxOutline = Drawing.new("Square"),
+        Name = Drawing.new("Text"),
+        HealthBar = Drawing.new("Square"),
+        HealthBarOutline = Drawing.new("Square")
+    }
+    self.Updater = nil
+    self:Initialize()
+    return self
+end
+
+function ESPObject:Initialize()
+    local objs = self.Objects
+    objs.Box.Filled = false
+    objs.BoxOutline.Filled = false
+    objs.HealthBar.Filled = true
+    objs.HealthBarOutline.Filled = true
+    objs.Name.Center = true
+    
+    self.Updater = RunService.RenderStepped:Connect(function()
+        self:Update()
+    end)
+end
+
+function ESPObject:Update()
+    local player = self.Player
+    local objs = self.Objects
+    local char = player and player.Character
+    local humanoid = char and char:FindFirstChild("Humanoid")
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    
+    if ESP.Enabled and char and humanoid and root and humanoid.Health > 0 and 
+       (not ESP.TeamCheck or player.Team ~= LocalPlayer.Team) then
+        local distance = (Camera.CFrame.Position - root.Position).Magnitude
+        if distance > ESP.MaxDistance then
+            for _, obj in pairs(objs) do
+                obj.Visible = false
+            end
+            return
+        end
+        
+        local pos, visible = Camera:WorldToViewportPoint(root.Position)
+        local scale = 1 / (pos.Z * math.tan(math.rad(Camera.FieldOfView * 0.5)) * 2) * 100
+        local w, h = math.floor(40 * scale), math.floor(60 * scale)
+        
+        if ESP.Box.Enabled then
+            objs.Box.Visible = visible
+            objs.Box.Size = Vector2.new(w, h)
+            objs.Box.Position = Vector2.new(pos.X - w/2, pos.Y - h/2)
+            objs.Box.Color = ESP.Box.Color
+            objs.Box.Thickness = ESP.Box.Thickness
+            objs.Box.ZIndex = 2
+            
+            objs.BoxOutline.Visible = visible and ESP.Box.Outline
+            objs.BoxOutline.Size = objs.Box.Size
+            objs.BoxOutline.Position = objs.Box.Position
+            objs.BoxOutline.Color = ESP.Box.OutlineColor
+            objs.BoxOutline.Thickness = ESP.Box.Thickness + 2
+            objs.BoxOutline.ZIndex = 1
+        else
+            objs.Box.Visible = false
+            objs.BoxOutline.Visible = false
+        end
+        
+        if ESP.Names.Enabled then
+            objs.Name.Visible = visible
+            objs.Name.Text = ESP.Names.ShowDistance and 
+                string.format("%s [%dm]", player.Name, math.floor(distance)) or player.Name
+            objs.Name.Position = Vector2.new(pos.X, pos.Y - h/2 - 15)
+            objs.Name.Color = ESP.Names.Color
+            objs.Name.Outline = ESP.Names.Outline
+            objs.Name.OutlineColor = ESP.Names.OutlineColor
+            objs.Name.Font = ESP.Names.Font
+            objs.Name.Size = ESP.Names.Size
+        else
+            objs.Name.Visible = false
+        end
+        
+        if ESP.HealthBar.Enabled then
+            local health = humanoid.Health / humanoid.MaxHealth
+            objs.HealthBar.Visible = visible
+            objs.HealthBar.Color = ESP.HealthBar.ColorLow:Lerp(ESP.HealthBar.ColorHigh, health)
+            objs.HealthBar.ZIndex = 2
+            objs.HealthBarOutline.Visible = visible
+            objs.HealthBarOutline.Color = ESP.HealthBar.OutlineColor
+            objs.HealthBarOutline.ZIndex = 1
+            
+            local side = ESP.HealthBar.Side
+            if side == "Left" then
+                objs.HealthBarOutline.Size = Vector2.new(2, h)
+                objs.HealthBarOutline.Position = Vector2.new(pos.X - w/2 - 3, pos.Y - h/2)
+                objs.HealthBar.Size = Vector2.new(1, -(h - 2) * health)
+                objs.HealthBar.Position = objs.HealthBarOutline.Position + Vector2.new(1, h - 1)
+            elseif side == "Bottom" then
+                objs.HealthBarOutline.Size = Vector2.new(w, 3)
+                objs.HealthBarOutline.Position = Vector2.new(pos.X - w/2, pos.Y + h/2)
+                objs.HealthBar.Size = Vector2.new((w - 2) * health, 1)
+                objs.HealthBar.Position = objs.HealthBarOutline.Position + Vector2.new(1, 1)
+            elseif side == "Right" then
+                objs.HealthBarOutline.Size = Vector2.new(2, h)
+                objs.HealthBarOutline.Position = Vector2.new(pos.X + w/2 + 1, pos.Y - h/2)
+                objs.HealthBar.Size = Vector2.new(1, -(h - 2) * health)
+                objs.HealthBar.Position = objs.HealthBarOutline.Position + Vector2.new(1, h - 1)
+            end
+        else
+            objs.HealthBar.Visible = false
+            objs.HealthBarOutline.Visible = false
+        end
+    else
+        for _, obj in pairs(objs) do
+            obj.Visible = false
+        end
+        if not player then
+            self:Destroy()
+        end
+    end
+end
+
+function ESPObject:Destroy()
+    for _, obj in pairs(self.Objects) do
+        obj:Remove()
+    end
+    if self.Updater then
+        self.Updater:Disconnect()
+    end
+end
+
+local function AddESP(player)
+    if player ~= LocalPlayer then
+        ActiveESPs[player] = ESPObject.new(player)
+    end
+end
+
+-- Initialize ESP for existing players
+for _, player in pairs(Players:GetPlayers()) do
+    AddESP(player)
+end
+
+-- Handle player added
+Players.PlayerAdded:Connect(AddESP)
+
+-- Handle player removing
+Players.PlayerRemoving:Connect(function(player)
+    if ActiveESPs[player] then
+        ActiveESPs[player]:Destroy()
+        ActiveESPs[player] = nil
+    end
+end)
+
+local function IsHoldingKnife()
+    if not (SilentAim.KnifeCheck or Camlock.KnifeCheck) then
+        return false
+    end
+    local Character = LocalPlayer.Character
+    if Character then
+        local Tool = Character:FindFirstChildOfClass("Tool")
+        return Tool and Tool.Name == "Knife"
+    end
+    return false
+end
+
+local function GetClosestPart(Character, MousePosition)
+    local ClosestDistance, ClosestPart = math.huge, nil
+    local Parts = {"Head", "HumanoidRootPart", "Torso", "Left Arm", "Right Arm", "Left Leg", "Right Leg"}
+    for _, PartName in ipairs(Parts) do
+        local Part = Character:FindFirstChild(PartName)
+        if Part then
+            local ScreenPosition, Visible = Camera:WorldToViewportPoint(Part.Position)
+            if Visible then
+                local Distance = (MousePosition - Vector2.new(ScreenPosition.X, ScreenPosition.Y)).Magnitude
+                if Distance < ClosestDistance then
+                    ClosestDistance, ClosestPart = Distance, Part
+                end
+            end
+        end
+    end
+    return ClosestPart
+end
+
+local function GetRandomPart(Character)
+    local Parts = {"Head", "HumanoidRootPart", "Torso", "Left Arm", "Right Arm", "Left Leg", "Right Leg"}
+    local ValidParts = {}
+    for _, PartName in ipairs(Parts) do
+        local Part = Character:FindFirstChild(PartName)
+        if Part then
+            table.insert(ValidParts, Part)
+        end
+    end
+    if #ValidParts > 0 then
+        return ValidParts[math.random(1, #ValidParts)]
+    end
+    return nil
+end
+
+local function GetClosestPlayer()
+    local ClosestDistance, ClosestPart = math.huge, nil
+    local MousePosition = UserInputService:GetMouseLocation()
+    for _, Player in next, Players:GetPlayers() do
+        if Player ~= LocalPlayer and Player.Character then
+            local Character = Player.Character
+            local Humanoid = Character:FindFirstChild("Humanoid")
+            if Humanoid and (not SilentAim.HealthCheck or Humanoid.Health > 0) then
+                local TargetPart
+                if SilentAim.HitPartMode == "Closest" then
+                    TargetPart = GetClosestPart(Character, MousePosition)
+                elseif SilentAim.HitPartMode == "Random" then
+                    TargetPart = GetRandomPart(Character)
+                else
+                    TargetPart = Character:FindFirstChild(SilentAim.HitPart)
+                end
+                if TargetPart then
+                    local ScreenPosition, Visible = Camera:WorldToViewportPoint(TargetPart.Position)
+                    if Visible then
+                        local Distance = (MousePosition - Vector2.new(ScreenPosition.X, ScreenPosition.Y)).Magnitude
+                        if Distance <= SilentAim.FOV.Radius and Distance < ClosestDistance then
+                            ClosestDistance, ClosestPart = Distance, TargetPart
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return ClosestPart
+end
+
+local function ApplyPrediction(TargetPart, PredictionSettings)
+    if not PredictionSettings.Enabled then
+        return TargetPart.Position
+    end
+    local Velocity = TargetPart.Velocity
+    local PredictedPosition = TargetPart.Position + Vector3.new(
+        Velocity.X * PredictionSettings.X,
+        Velocity.Y * PredictionSettings.Y,
+        Velocity.Z * PredictionSettings.X
+    )
+    return PredictedPosition
+end
+
+local function CheckHitChance()
+    return math.random(1, 100) <= SilentAim.HitChance
+end
+
+local function GetCamlockTarget()
+    local ClosestPlayer, ClosestDistance = nil, math.huge
+    for _, Plr in pairs(Players:GetPlayers()) do
+        if Plr ~= LocalPlayer then
+            if Plr.Character and (Plr.Character:FindFirstChild("HumanoidRootPart") or Plr.Character:FindFirstChild("Torso")) then
+                if not Camlock.HealthCheck or (Plr.Character:FindFirstChildOfClass("Humanoid") and Plr.Character:FindFirstChildOfClass("Humanoid").Health > 0) then
+                    local MousePos = Vector2.new(Mouse.X, Mouse.Y)
+                    local TargetPart
+                    if Camlock.HitPartMode == "Closest" then
+                        TargetPart = GetClosestPart(Plr.Character, MousePos)
+                    elseif Camlock.HitPartMode == "Random" then
+                        TargetPart = GetRandomPart(Plr.Character)
+                    else
+                        TargetPart = Plr.Character:FindFirstChild(Camlock.HitPart)
+                    end
+                    if TargetPart then
+                        local ScreenPos, Visible = Camera:WorldToViewportPoint(TargetPart.Position)
+                        if Visible then
+                            ScreenPos = Vector2.new(ScreenPos.X, ScreenPos.Y)
+                            local Difference = (ScreenPos - MousePos).Magnitude
+                            if Difference < ClosestDistance then
+                                ClosestDistance = Difference
+                                ClosestPlayer = Plr
+                                ClosestPlayer.TargetPart = TargetPart
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    Target = ClosestPlayer
+end
+
+local function CamlockMain()
+    if Camlock.KnifeCheck and IsHoldingKnife() then
+        if Tween then Tween:Cancel() end
+        if Cycle then Cycle:Disconnect() end
+        return
+    end
+    GetCamlockTarget()
+    Cycle = RunService.RenderStepped:Connect(function()
+        if Camlock.KnifeCheck and IsHoldingKnife() then
+            if Tween then Tween:Cancel() end
+            Cycle:Disconnect()
+            return
+        end
+        if Target and Target.Character and Target.TargetPart and (Target.Character:FindFirstChild("HumanoidRootPart") or Target.Character:FindFirstChild("Torso")) then
+            if not Camlock.HealthCheck or (Target.Character:FindFirstChildOfClass("Humanoid") and Target.Character:FindFirstChildOfClass("Humanoid").Health > 0) then
+                Info = TweenInfo.new(Camlock.Time, Enum.EasingStyle.Quad, Enum.EasingDirection.Out, 0, false, 0)
+                local targetPosition = Camlock.Prediction.Enabled and ApplyPrediction(Target.TargetPart, Camlock.Prediction) or Target.TargetPart.Position
+                local LookAt = CFrame.lookAt(Camera.CFrame.Position, targetPosition)
+                Tween = TweenService:Create(Camera, Info, {CFrame = LookAt})
+                Tween:Play()
+            else
+                Cycle:Disconnect()
+            end
+        else
+            Cycle:Disconnect()
+        end
+    end)
+end
+
+local function getBacktrackPosition(player)
+    local data = backtrackData[player]
+    if not Backtrack.Enabled or not data then return nil end
+
+    local currentTime = tick()
+    for i = 1, #data do
+        local record = data[i]
+        if currentTime - record.time <= Backtrack.MaxTime then
+            if Backtrack.Prediction.Enabled then
+                local timeDelta = currentTime - record.time
+                return record.position + Vector3.new(
+                    record.velocity.X * Backtrack.Prediction.X * timeDelta,
+                    record.velocity.Y * Backtrack.Prediction.Y * timeDelta,
+                    record.velocity.Z * Backtrack.Prediction.X * timeDelta
+                )
+            end
+            return record.position
+        end
+    end
+    return nil
+end
+
+local function recordPlayerPosition(player)
+    if not Backtrack.Enabled then return end
+    local char = player.Character
+    if not char or not char:FindFirstChild("HumanoidRootPart") then return end
+
+    local currentTime = tick()
+    if lastRecordTime[player] and (currentTime - lastRecordTime[player] < Backtrack.RecordInterval) then
+        return
+    end
+    lastRecordTime[player] = currentTime
+
+    local rootPart = char.HumanoidRootPart
+    local data = backtrackData[player]
+    if not data then
+        backtrackData[player] = {}
+        data = backtrackData[player]
+    end
+
+    local lastRecord = data[1]
+    local velocity = Vector3.zero
+    if lastRecord then
+        local dt = currentTime - lastRecord.time
+        if dt > 0 then
+            velocity = (rootPart.Position - lastRecord.position) / dt
+        end
+    end
+
+    table.insert(data, 1, {
+        position = rootPart.Position,
+        velocity = velocity,
+        time = currentTime
+    })
+
+    if #data > Backtrack.MaxRecords then
+        table.remove(data)
+    end
+end
+
+local function cleanupData()
+    if not Backtrack.Enabled then
+        backtrackData = {}
+        lastRecordTime = {}
+        for player, visual in pairs(backtrackVisuals) do
+            visual:Destroy()
+            backtrackVisuals[player] = nil
+        end
+        return
+    end
+    for player, data in pairs(backtrackData) do
+        if not player.Parent or not player.Character or not data then
+            backtrackData[player] = nil
+            lastRecordTime[player] = nil
+            if backtrackVisuals[player] then
+                backtrackVisuals[player]:Destroy()
+                backtrackVisuals[player] = nil
+            end
+        elseif #data > 0 and tick() - data[1].time > Backtrack.MaxTime * 2 then
+            backtrackData[player] = nil
+            lastRecordTime[player] = nil
+            if backtrackVisuals[player] then
+                backtrackVisuals[player]:Destroy()
+                backtrackVisuals[player] = nil
+            end
+        end
+    end
+end
+
+local function updateBacktrackVisuals()
+    if not Backtrack.Enabled or not Backtrack.Visualize.Enabled then
+        for _, visual in pairs(backtrackVisuals) do
+            visual:Destroy()
+        end
+        backtrackVisuals = {}
+        return
+    end
+
+    for player, data in pairs(backtrackData) do
+        if player.Character and #data > 0 then
+            if not backtrackVisuals[player] then
+                local visual = Instance.new("Part")
+                visual.Name = player.Name .. "_BacktrackVisual"
+                visual.Anchored = true
+                visual.CanCollide = false
+                visual.Material = Enum.Material.Neon
+                visual.Color = Backtrack.Visualize.Color
+                visual.Transparency = Backtrack.Visualize.Transparency
+                visual.Size = Vector3.new(Backtrack.Visualize.Size, Backtrack.Visualize.Size, Backtrack.Visualize.Size)
+                visual.Parent = workspace
+                backtrackVisuals[player] = visual
+            end
+            local latestPosition = getBacktrackPosition(player) or data[1].position
+            backtrackVisuals[player].CFrame = CFrame.new(latestPosition)
+        else
+            if backtrackVisuals[player] then
+                backtrackVisuals[player]:Destroy()
+                backtrackVisuals[player] = nil
+            end
+        end
+    end
+end
+
+local function GetMagnitudeFromMouse(targetPart)
+    local targetScreenPos, onScreen = Camera:WorldToViewportPoint(targetPart.Position)
+    if onScreen then
+        local mousePos = UserInputService:GetMouseLocation()
+        return (Vector2.new(targetScreenPos.X, targetScreenPos.Y) - mousePos).Magnitude
+    end
+    return math.huge
+end
+
+local function Click()
+    local currentTime = tick()
+    if currentTime - lastClickTime < TriggerBot.Delay then return end
+    lastClickTime = currentTime
+
+    mouse1press()
+    wait(0.01)
+    mouse1release()
+
+    local tool = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Tool")
+    if tool then
+        local remotes = {"MainEvent", "Shoot", "Fire"}
+        for _, remoteName in pairs(remotes) do
+            local remote = ReplicatedStorage:FindFirstChild(remoteName) or tool:FindFirstChild(remoteName)
+            if remote and remote:IsA("RemoteEvent") then
+                remote:FireServer()
+            end
+        end
+    end
+end
+
+local function ClearHitboxVisual(player)
+    if hitboxVisuals[player] then
+        hitboxVisuals[player]:Destroy()
+        hitboxVisuals[player] = nil
+    end
+end
+
+local function UpdateHitboxExpander()
+    if not HitboxExpander.Enabled then
+        for player, _ in pairs(hitboxVisuals) do
+            ClearHitboxVisual(player)
+        end
+        return
+    end
+
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and player.Character then
+            local humanoid = player.Character:FindFirstChildOfClass("Humanoid")
+            local rootPart = humanoid and humanoid.RootPart
+            if rootPart then
+                rootPart.CanCollide = false
+                rootPart.Size = Vector3.new(HitboxExpander.Size, HitboxExpander.Size, HitboxExpander.Size)
+
+                if HitboxExpander.Visualize then
+                    if not hitboxVisuals[player] then
+                        local visual = Instance.new("Part")
+                        visual.Name = player.Name .. "_HitboxVisual"
+                        visual.Anchored = true
+                        visual.CanCollide = false
+                        visual.Material = Enum.Material.ForceField
+                        visual.Color = HitboxExpander.VisualizeFillColor
+                        visual.Transparency = HitboxExpander.VisualizeTransparency
+                        local outline = Instance.new("SelectionBox")
+                        outline.Adornee = visual
+                        outline.LineThickness = 0.01
+                        outline.SurfaceColor3 = HitboxExpander.VisualizeOutlineColor
+                        outline.SurfaceTransparency = HitboxExpander.VisualizeTransparency
+                        outline.Parent = visual
+                        visual.Parent = workspace
+                        hitboxVisuals[player] = visual
+                    end
+                    hitboxVisuals[player].Size = rootPart.Size
+                    hitboxVisuals[player].CFrame = rootPart.CFrame
+                else
+                    ClearHitboxVisual(player)
+                end
+            else
+                ClearHitboxVisual(player)
+            end
+        end
+    end
+end
+
+local function ToggleWalkSpeed()
+    if not Movement.WalkSpeed.Enabled then return end
+    WalkSpeedEnabled = not WalkSpeedEnabled
+    local speed = WalkSpeedEnabled and Movement.WalkSpeed.FastSpeed or Movement.WalkSpeed.NormalSpeed
+    local Humanoid = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+    if Humanoid then
+        _G.WS = speed
+        Humanoid:GetPropertyChangedSignal("WalkSpeed"):Connect(function()
+            Humanoid.WalkSpeed = _G.WS
+        end)
+        Humanoid.WalkSpeed = _G.WS
+    end
+end
+
+local function ToggleJumpPower()
+    if not Movement.JumpPower.Enabled then return end
+    JumpPowerEnabled = not JumpPowerEnabled
+    local power = JumpPowerEnabled and Movement.JumpPower.FastPower or Movement.JumpPower.NormalPower
+    local Humanoid = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+    if Humanoid then
+        _G.JP = power
+        Humanoid:GetPropertyChangedSignal("JumpPower"):Connect(function()
+            Humanoid.JumpPower = _G.JP
+        end)
+        Humanoid.JumpPower = _G.JP
+    end
+end
+
+local success, grm = pcall(getrawmetatable, game)
+if success and grm and grm.__index and setreadonly then
+    local index = grm.__index
+    setreadonly(grm, false)
+
+    grm.__index = function(self, k)
+        if not checkcaller() and self == LocalPlayer:GetMouse() and SilentAim.Enabled and not IsHoldingKnife() then
+            if (k == "Hit" or k == "Target") and CheckHitChance() then
+                local TargetPart = GetClosestPlayer()
+                if TargetPart then
+                    local Position = SilentAim.Prediction.Enabled and ApplyPrediction(TargetPart, SilentAim.Prediction) or TargetPart.Position
+                    return CFrame.new(Position)
+                end
+            end
+        end
+        return index(self, k)
+    end
+else
+    warn("[Silent Aim] Metatable hooking not supported on this executor. Silent Aim disabled.")
+end
+
+RunService.RenderStepped:Connect(function()
+    if SilentAim.Enabled then
+        FOVCircle.Visible = SilentAim.FOV.Visible
+        FOVCircle.Position = UserInputService:GetMouseLocation()
+        FOVCircle.Radius = SilentAim.FOV.Radius
+        FOVCircle.Color = SilentAim.FOV.OutlineColor
+        FOVCircle.Transparency = SilentAim.FOV.Transparency
+    else
+        FOVCircle.Visible = false
+    end
+end)
+
+RunService.Heartbeat:Connect(function()
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer then
+            recordPlayerPosition(player)
+        end
+    end
+
+    if tick() - lastCleanup >= 15 then
+        cleanupData()
+        lastCleanup = tick()
+    end
+
+    updateBacktrackVisuals()
+end)
+
+RunService.RenderStepped:Connect(function()
+    if not TriggerBot.Enabled or not LocalPlayer.Character then return end
+
+    local closestTarget = nil
+    local closestDistance = math.huge
+
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and player.Character then
+            local head = player.Character:FindFirstChild("Head")
+            if head and head.Parent:FindFirstChildOfClass("Humanoid") and head.Parent.Humanoid.Health > 0 then
+                local screenMagnitude = GetMagnitudeFromMouse(head)
+                if screenMagnitude < TriggerBot.TriggerRadius and screenMagnitude < closestDistance then
+                    closestDistance = screenMagnitude
+                    closestTarget = head
+                end
+            end
+        end
+    end
+
+    if closestTarget then
+        Click()
+    end
+end)
+
+task.spawn(function()
+    while true do
+        UpdateHitboxExpander()
+        task.wait(HitboxExpander.RefreshTime)
+    end
+end)
+
+UserInputService.InputBegan:Connect(function(Key, E)
+    if E then return end
+    if Camlock.Enabled and Key.KeyCode == Enum.KeyCode[Camlock.Bind:upper()] then
+        if not IsToggled then
+            CamlockMain()
+            IsToggled = true
+        elseif IsToggled then
+            if Tween then Tween:Cancel() end
+            if Cycle then Cycle:Disconnect() end
+            IsToggled = false
+        end
+    elseif TriggerBot.Enabled and Key.KeyCode == Enum.KeyCode[TriggerBot.ToggleKey] then
+        TriggerBot.Enabled = not TriggerBot.Enabled
+    elseif Movement.WalkSpeed.Enabled and Key.KeyCode == Enum.KeyCode[Movement.WalkSpeed.ToggleKey] then
+        ToggleWalkSpeed()
+    elseif Movement.JumpPower.Enabled and Key.KeyCode == Enum.KeyCode[Movement.JumpPower.ToggleKey] then
+        ToggleJumpPower()
+    end
+end)
+
+motional.backtrackAPI = {
+    getBacktrackPosition = getBacktrackPosition
+}
