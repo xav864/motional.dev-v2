@@ -51,7 +51,7 @@ FOVCircle.Transparency = SilentAim.FOV.Transparency
 FOVCircle.Radius = SilentAim.FOV.Radius
 
 local IsToggled = false
-local Target = { Player = nil, TargetPart = nil } -- Modified to be a table
+local Target = { Player = nil, TargetPart = nil } -- Table to store both the player and target part
 local Tween
 local Info
 local Cycle
@@ -223,6 +223,13 @@ Players.PlayerRemoving:Connect(function(player)
         ActiveESPs[player]:Destroy()
         ActiveESPs[player] = nil
     end
+    -- Reset Target if the player being removed is the Camlock target
+    if Target.Player == player then
+        Target = { Player = nil, TargetPart = nil }
+        if Cycle then Cycle:Disconnect() end
+        if Tween then Tween:Cancel() end
+        IsToggled = false
+    end
 end)
 
 local function IsHoldingKnife()
@@ -239,7 +246,7 @@ end
 
 local function GetClosestPart(Character, MousePosition)
     local ClosestDistance, ClosestPart = math.huge, nil
-    local Parts = {"Head", "HumanoidRootPart", "Torso", "Left Arm", "Right Arm", "Left Leg", "Right Leg"}
+    local Parts = {"Head", "HumanoidRootPart", "Torso", "Left Arm", "Right Arm", "Left Leg", "Right Leg", "UpperTorso"}
     for _, PartName in ipairs(Parts) do
         local Part = Character:FindFirstChild(PartName)
         if Part then
@@ -256,7 +263,7 @@ local function GetClosestPart(Character, MousePosition)
 end
 
 local function GetRandomPart(Character)
-    local Parts = {"Head", "HumanoidRootPart", "Torso", "Left Arm", "Right Arm", "Left Leg", "Right Leg"}
+    local Parts = {"Head", "HumanoidRootPart", "Torso", "Left Arm", "Right Arm", "Left Leg", "Right Leg", "UpperTorso"}
     local ValidParts = {}
     for _, PartName in ipairs(Parts) do
         local Part = Character:FindFirstChild(PartName)
@@ -284,7 +291,7 @@ local function GetClosestPlayer()
                 elseif SilentAim.HitPartMode == "Random" then
                     TargetPart = GetRandomPart(Character)
                 else
-                    TargetPart = Character:FindFirstChild(SilentAim.HitPart)
+                    TargetPart = Character:FindFirstChild(SilentAim.HitPart) or Character:FindFirstChild("Torso") or Character:FindFirstChild("UpperTorso")
                 end
                 if TargetPart then
                     local ScreenPosition, Visible = Camera:WorldToViewportPoint(TargetPart.Position)
@@ -324,7 +331,7 @@ local function GetCamlockTarget()
     for _, Plr in pairs(Players:GetPlayers()) do
         if Plr ~= LocalPlayer then
             local Character = Plr.Character
-            if Character and (Character:FindFirstChild("HumanoidRootPart") or Character:FindFirstChild("Torso")) then
+            if Character and (Character:FindFirstChild("HumanoidRootPart") or Character:FindFirstChild("Torso") or Character:FindFirstChild("UpperTorso")) then
                 local Humanoid = Character:FindFirstChildOfClass("Humanoid")
                 if not Camlock.HealthCheck or (Humanoid and Humanoid.Health > 0) then
                     local MousePos = Vector2.new(Mouse.X, Mouse.Y)
@@ -334,7 +341,8 @@ local function GetCamlockTarget()
                     elseif Camlock.HitPartMode == "Random" then
                         TargetPart = GetRandomPart(Character)
                     else
-                        TargetPart = Character:FindFirstChild(Camlock.HitPart)
+                        -- Fallback to other parts if the specified HitPart isn't found
+                        TargetPart = Character:FindFirstChild(Camlock.HitPart) or Character:FindFirstChild("Torso") or Character:FindFirstChild("UpperTorso")
                     end
                     if TargetPart then
                         local ScreenPos, Visible = Camera:WorldToViewportPoint(TargetPart.Position)
@@ -352,8 +360,13 @@ local function GetCamlockTarget()
             end
         end
     end
-    -- Update Target as a table
     Target = { Player = ClosestPlayer, TargetPart = ClosestTargetPart }
+    -- Debug print to check the target
+    if ClosestPlayer then
+        print("[Camlock] Targeting player:", ClosestPlayer.Name, "Part:", ClosestTargetPart and ClosestTargetPart.Name or "nil")
+    else
+        print("[Camlock] No valid target found.")
+    end
 end
 
 local function CamlockMain()
@@ -364,18 +377,26 @@ local function CamlockMain()
     end
     GetCamlockTarget()
     if not Target.Player or not Target.TargetPart then
+        print("[Camlock] No valid target or target part, aborting.")
         return -- Exit if no valid target is found
     end
     Cycle = RunService.RenderStepped:Connect(function()
-        if Camlock.KnifeCheck and IsHoldingKnife() then
-            if Tween then Tween:Cancel() end
-            Cycle:Disconnect()
-            return
-        end
-        local TargetPlayer = Target.Player
-        local TargetPart = Target.TargetPart
-        local Character = TargetPlayer and TargetPlayer.Character
-        if Character and TargetPart and (Character:FindFirstChild("HumanoidRootPart") or Character:FindFirstChild("Torso")) then
+        local success, err = pcall(function()
+            if Camlock.KnifeCheck and IsHoldingKnife() then
+                if Tween then Tween:Cancel() end
+                Cycle:Disconnect()
+                return
+            end
+            local TargetPlayer = Target.Player
+            local TargetPart = Target.TargetPart
+            local Character = TargetPlayer and TargetPlayer.Character
+            -- Validate that the character, target part, and required parts still exist
+            if not Character or not TargetPart or not TargetPart.Parent or not (Character:FindFirstChild("HumanoidRootPart") or Character:FindFirstChild("Torso") or Character:FindFirstChild("UpperTorso")) then
+                print("[Camlock] Target invalidated during loop. Player:", TargetPlayer and TargetPlayer.Name or "nil", "Part:", TargetPart and TargetPart.Name or "nil")
+                Target = { Player = nil, TargetPart = nil }
+                Cycle:Disconnect()
+                return
+            end
             local Humanoid = Character:FindFirstChildOfClass("Humanoid")
             if not Camlock.HealthCheck or (Humanoid and Humanoid.Health > 0) then
                 Info = TweenInfo.new(Camlock.Time, Enum.EasingStyle.Quad, Enum.EasingDirection.Out, 0, false, 0)
@@ -386,7 +407,10 @@ local function CamlockMain()
             else
                 Cycle:Disconnect()
             end
-        else
+        end)
+        if not success then
+            warn("[Camlock] Error in loop: " .. tostring(err))
+            Target = { Player = nil, TargetPart = nil }
             Cycle:Disconnect()
         end
     end)
@@ -709,15 +733,19 @@ UserInputService.InputBegan:Connect(function(Key, E)
     if E then return end
     if Camlock.Enabled and Key.KeyCode == Enum.KeyCode[Camlock.Bind:upper()] then
         if not IsToggled then
+            print("[Camlock] Toggling on Camlock.")
             CamlockMain()
             IsToggled = true
         elseif IsToggled then
+            print("[Camlock] Toggling off Camlock.")
             if Tween then Tween:Cancel() end
             if Cycle then Cycle:Disconnect() end
+            Target = { Player = nil, TargetPart = nil } -- Reset Target when toggling off
             IsToggled = false
         end
     elseif TriggerBot.Enabled and Key.KeyCode == Enum.KeyCode[TriggerBot.ToggleKey] then
         TriggerBot.Enabled = not TriggerBot.Enabled
+        print("[TriggerBot] Toggled to:", TriggerBot.Enabled)
     elseif Movement.WalkSpeed.Enabled and Key.KeyCode == Enum.KeyCode[Movement.WalkSpeed.ToggleKey] then
         ToggleWalkSpeed()
     elseif Movement.JumpPower.Enabled and Key.KeyCode == Enum.KeyCode[Movement.JumpPower.ToggleKey] then
